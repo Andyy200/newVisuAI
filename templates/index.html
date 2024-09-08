@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Camera Stream with Audio</title>
+  </head>
+  <body>
+    <div>
+      <video id="video" autoplay playsinline></video>
+      <p id="status">Listening for 'Hey Vision'...</p>
+      <p id="transcript">Transcript: <span id="captions">Listening...</span></p>
+      <p id="ai-response">AI Response: <span id="response"></span></p>
+      <!-- To display the server response -->
+    </div>
+
+    <script>
+      const videoElement = document.getElementById("video");
+      const statusElement = document.getElementById("status");
+      const captionsElement = document.getElementById("captions");
+      const responseElement = document.getElementById("response");
+      let isListeningForQuestion = false;
+      // Function to start the camera and capture frames every second
+      function startCamera() {
+        navigator.mediaDevices
+          .getUserMedia({ video: true, audio: false })
+          .then((stream) => {
+            videoElement.srcObject = stream;
+            captureInterval = setInterval(captureFrame, 1000); // Capture frame every 1000ms (1 second)
+          })
+          .catch((err) => {
+            console.error("Error accessing the camera: ", err);
+          });
+      }
+
+      // Function to capture the current frame from the video and send it to the Flask server
+      function captureFrame() {
+        const canvas = document.createElement("canvas");
+        canvas.width = videoElement.videoWidth;
+        canvas.height = videoElement.videoHeight;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+        // Convert the canvas image to a blob and send it to the Flask server
+        canvas.toBlob((blob) => {
+          const formData = new FormData();
+          formData.append("image", blob);
+
+          // Send the captured frame to the Flask server
+          fetch("/process_image", {
+            method: "POST",
+            body: formData,
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              console.log("Detected objects:", data.objects_detected);
+            })
+            .catch((err) => {
+              console.error("Error sending the image to the server: ", err);
+            });
+        }, "image/jpeg"); // Capture the image in jpeg format
+      }
+
+      // Function to send transcript to the server and get AI response
+      function getAIResponse(transcript) {
+        const formData = new FormData();
+        formData.append("transcript", transcript);
+
+        fetch("/process_speech", {
+          method: "POST",
+          body: formData,
+        })
+          .then((response) => response.json())
+          .then((data) => {
+            responseElement.textContent = data.response;
+            speakResponse(data.response);
+          })
+          .catch((error) => {
+            console.error("Error fetching AI response:", error);
+          });
+      }
+
+      // Function to speak the AI response
+      function speakResponse(text) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.onend = function () {
+          recognition.start(); // Resume listening after the AI finishes speaking
+          statusElement.textContent = "Listening for 'Hey Vision'...";
+        };
+        speechSynthesis.speak(utterance);
+      }
+
+      // Speech recognition setup
+      const recognition = new (window.SpeechRecognition ||
+        window.webkitSpeechRecognition)();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
+
+      recognition.onresult = function (event) {
+        const transcript =
+          event.results[event.results.length - 1][0].transcript.trim();
+        captionsElement.textContent = transcript;
+
+        if (
+          !isListeningForQuestion &&
+          transcript.toLowerCase().includes("hey vision")
+        ) {
+          isListeningForQuestion = true;
+          statusElement.textContent = "Listening for your question...";
+        } else if (isListeningForQuestion) {
+          recognition.stop(); // Stop listening while processing the question
+          statusElement.textContent = "Processing...";
+          getAIResponse(transcript);
+          isListeningForQuestion = false;
+        }
+      };
+
+      recognition.onerror = function (event) {
+        console.error("Speech recognition error:", event.error);
+      };
+
+      recognition.onend = function () {
+        if (!isListeningForQuestion) {
+          recognition.start(); // Restart if not waiting for a question
+        }
+      };
+
+      // Function to start continuous audio recording
+      function startContinuousAudioRecording() {
+        navigator.mediaDevices
+          .getUserMedia({ audio: true })
+          .then((stream) => {
+            const mediaRecorder = new MediaRecorder(stream);
+            let audioChunks = [];
+
+            // Collect all audio chunks
+            mediaRecorder.addEventListener("dataavailable", (event) => {
+              audioChunks.push(event.data);
+            });
+
+            // When recording stops, process the full audio
+            mediaRecorder.addEventListener("stop", () => {
+              const audioBlob = new Blob(audioChunks, { type: "audio/wav" });
+              const formData = new FormData();
+              formData.append("audio", audioBlob);
+
+              // Send the full audio to the server
+              fetch("/get_audio", {
+                method: "POST",
+                body: formData,
+              })
+                .then((response) => response.json())
+                .then((data) => {
+                  captionsElement.textContent = data.transcript;
+                })
+                .catch((err) => {
+                  console.error("Error sending the audio to the server:", err);
+                });
+            });
+
+            mediaRecorder.start(); // Start recording continuously
+            setTimeout(() => mediaRecorder.stop(), 5000); // Stop recording after 5 seconds (or increase as necessary)
+          })
+          .catch((err) => {
+            console.error("Error accessing the microphone: ", err);
+          });
+      }
+
+      // Start the camera and audio recording when the page loads
+      window.onload = () => {
+        startCamera(); // Start the camera
+        recognition.start(); // Start speech recognition
+        startContinuousAudioRecording(); // Start audio recording
+        statusElement.textContent = "Listening for 'Hey Vision'...";
+      };
+    </script>
+  </body>
+</html>
